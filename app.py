@@ -1,36 +1,13 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import tweepy
-
-from datetime import datetime
 from transformers import pipeline
-from streamlit_autorefresh import st_autorefresh
 
+st.set_page_config(page_title="World Cup Sentiment", layout="wide")
 
-# -------------------------
-# PAGE CONFIG
-# -------------------------
+st.title("Qatar 2022 World Cup Sentiment Analysis")
+st.write("Tweets dataset + Hugging Face sentiment + Streamlit dashboard")
 
-st.set_page_config(
-    page_title="World Cup Sentiment Tracker",
-    layout="wide"
-)
-
-st.title("Real-Time World Cup Sentiment Tracker")
-st.write("Live X/Twitter sentiment during World Cup matches")
-
-
-# -------------------------
-# API TOKEN
-# -------------------------
-
-BEARER_TOKEN = st.secrets["X_BEARER_TOKEN"]
-
-
-# -------------------------
-# LOAD MODEL
-# -------------------------
 
 @st.cache_resource
 def load_model():
@@ -40,227 +17,125 @@ def load_model():
     )
 
 
-sentiment_model = load_model()
+@st.cache_data
+def load_data():
+    df = pd.read_csv("tweets.csv")
+
+    text_cols = ["tweet", "Tweet", "text", "Text", "content"]
+    date_cols = ["date", "Date", "created_at", "timestamp", "Datetime"]
+
+    text_col = next(c for c in text_cols if c in df.columns)
+    date_col = next(c for c in date_cols if c in df.columns)
+
+    df = df[[date_col, text_col]].copy()
+    df.columns = ["date", "tweet"]
+
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.dropna()
+    df = df.sort_values("date")
+
+    return df
 
 
-# -------------------------
-# X CLIENT
-# -------------------------
-
-@st.cache_resource
-def load_client():
-    return tweepy.Client(
-        bearer_token=BEARER_TOKEN,
-        wait_on_rate_limit=True
-    )
+def get_sentiment(text):
+    result = model(str(text)[:512])[0]
+    return result["label"].lower()
 
 
-client = load_client()
+model = load_model()
+df = load_data()
 
+st.sidebar.header("Settings")
 
-# -------------------------
-# SIDEBAR
-# -------------------------
-
-st.sidebar.header("Match settings")
-
-query = st.sidebar.text_input(
-    "Search query",
-    '"World Cup" lang:en -is:retweet'
-)
-
-max_tweets = st.sidebar.slider(
-    "Tweets per refresh",
-    10,
+sample_size = st.sidebar.slider(
+    "Tweets to analyze",
     100,
-    30
+    3000,
+    500
 )
 
-refresh_seconds = st.sidebar.slider(
-    "Refresh every seconds",
-    10,
-    120,
-    30
+freq = st.sidebar.selectbox(
+    "Time interval",
+    ["1H", "3H", "6H", "12H", "1D"]
 )
 
-goal_label = st.sidebar.text_input(
-    "Goal event label",
-    "Goal!"
-)
+df = df.head(sample_size)
 
-add_goal = st.sidebar.button("Mark goal now")
-
-
-# -------------------------
-# SESSION STATE
-# -------------------------
-
-if "data" not in st.session_state:
-    st.session_state.data = []
-
-if "goals" not in st.session_state:
-    st.session_state.goals = []
-
-if add_goal:
-    st.session_state.goals.append({
-        "time": datetime.now(),
-        "label": goal_label
-    })
+if "sentiment" not in df.columns:
+    with st.spinner("Analyzing sentiment..."):
+        df["sentiment"] = df["tweet"].apply(get_sentiment)
 
 
-# -------------------------
-# AUTO REFRESH
-# -------------------------
+total = len(df)
+pos = len(df[df["sentiment"] == "positive"])
+neu = len(df[df["sentiment"] == "neutral"])
+neg = len(df[df["sentiment"] == "negative"])
 
-st_autorefresh(
-    interval=refresh_seconds * 1000,
-    key="refresh"
-)
+c1, c2, c3, c4 = st.columns(4)
 
-
-# -------------------------
-# FUNCTIONS
-# -------------------------
-
-def analyze_text(text):
-    result = sentiment_model(text[:512])[0]
-    label = result["label"].lower()
-    score = round(result["score"], 3)
-
-    return label, score
+c1.metric("Total tweets", total)
+c2.metric("Positive", pos)
+c3.metric("Neutral", neu)
+c4.metric("Negative", neg)
 
 
-def get_tweets():
-    response = client.search_recent_tweets(
-        query=query,
-        max_results=max_tweets,
-        tweet_fields=["created_at", "lang"]
-    )
-
-    if response.data is None:
-        return []
-
-    new_rows = []
-
-    for tweet in response.data:
-        label, score = analyze_text(tweet.text)
-
-        new_rows.append({
-            "time": datetime.now(),
-            "tweet": tweet.text,
-            "sentiment": label,
-            "score": score
-        })
-
-    return new_rows
-
-
-# -------------------------
-# GET LIVE TWEETS
-# -------------------------
-
-try:
-    new_data = get_tweets()
-    st.session_state.data.extend(new_data)
-
-except Exception as e:
-    st.error("Error pulling tweets")
-    st.write(e)
-
-
-# -------------------------
-# DATAFRAME
-# -------------------------
-
-df = pd.DataFrame(st.session_state.data)
-
-if df.empty:
-    st.warning("Waiting for tweets...")
-    st.stop()
-
-
-# Keep app light
-df = df.tail(500)
-
-
-# -------------------------
-# METRICS
-# -------------------------
-
-positive = len(df[df["sentiment"] == "positive"])
-neutral = len(df[df["sentiment"] == "neutral"])
-negative = len(df[df["sentiment"] == "negative"])
-
-col1, col2, col3, col4 = st.columns(4)
-
-col1.metric("Total tweets", len(df))
-col2.metric("Positive", positive)
-col3.metric("Neutral", neutral)
-col4.metric("Negative", negative)
-
-
-# -------------------------
-# CHART 1: SENTIMENT COUNT
-# -------------------------
+st.subheader("Sentiment Distribution")
 
 count_df = df["sentiment"].value_counts().reset_index()
 count_df.columns = ["sentiment", "count"]
 
-fig_count = px.bar(
+fig1 = px.bar(
     count_df,
     x="sentiment",
     y="count",
-    title="Current Sentiment Count"
+    title="Positive / Neutral / Negative Tweets"
 )
 
-st.plotly_chart(fig_count, use_container_width=True)
+st.plotly_chart(fig1, use_container_width=True)
 
 
-# -------------------------
-# CHART 2: SENTIMENT OVER TIME
-# -------------------------
+st.subheader("Opinion Shift During Qatar 2022")
 
-df["minute"] = pd.to_datetime(df["time"]).dt.floor("min")
+df["period"] = df["date"].dt.floor(freq)
 
 time_df = (
-    df.groupby(["minute", "sentiment"])
+    df.groupby(["period", "sentiment"])
     .size()
     .reset_index(name="count")
 )
 
-fig_time = px.line(
+fig2 = px.line(
     time_df,
-    x="minute",
+    x="period",
     y="count",
     color="sentiment",
-    title="Sentiment Shift Over Time",
-    markers=True
+    markers=True,
+    title="Sentiment Over Time"
 )
 
-for goal in st.session_state.goals:
-    fig_time.add_vline(
-        x=goal["time"],
-        line_dash="dash",
-        annotation_text=goal["label"]
-    )
-
-st.plotly_chart(fig_time, use_container_width=True)
+st.plotly_chart(fig2, use_container_width=True)
 
 
-# -------------------------
-# LATEST TWEETS
-# -------------------------
+st.subheader("Sentiment Share Over Time")
 
-st.subheader("Latest Tweets")
+share_df = time_df.copy()
+share_df["total"] = share_df.groupby("period")["count"].transform("sum")
+share_df["share"] = share_df["count"] / share_df["total"]
 
-latest = df.tail(10).sort_values("time", ascending=False)
+fig3 = px.area(
+    share_df,
+    x="period",
+    y="share",
+    color="sentiment",
+    title="Public Opinion Share Over Time"
+)
 
-for _, row in latest.iterrows():
-    st.write(
-        f"**{row['sentiment'].upper()}** "
-        f"({row['score']})"
-    )
-    st.write(row["tweet"])
-    st.divider()
+st.plotly_chart(fig3, use_container_width=True)
 
-    
+
+st.subheader("Sample Tweets")
+
+st.dataframe(
+    df[["date", "tweet", "sentiment"]].tail(20),
+    use_container_width=True
+)

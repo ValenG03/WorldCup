@@ -1,7 +1,0 @@
-streamlit
-streamlit-autorefresh
-tweepy
-pandas
-plotly
-transformers
-torch
